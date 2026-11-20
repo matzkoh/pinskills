@@ -100,6 +100,10 @@ npm install -g pinskills
 実行のたびに最新版を取ってくると、pinskills 自身が、防ごうとしている「黙って中身が変わる」状態になるためである。
 上げるときは、リリースの差分を読んでから `npm install -g pinskills@<version>` で入れる。
 
+0.1.1 以降のリリースは npm の trusted publishing を使い、[GitHub Actions](.github/workflows/release.yml) から公開する。
+各版には、ビルドしたコミットとワークフローの実行を示す [provenance](https://docs.npmjs.com/generating-provenance-statements) が付く。
+`npm audit signatures` で確かめられる。
+
 手元で改造しながら使う場合は、clone して `npm link` する。
 
 ```sh

@@ -97,6 +97,8 @@ npm install -g pinskills
 
 Install it globally rather than running it through `npx`. A guard that fetches its latest version on every run would be open to the same kind of silent change it exists to stop. To upgrade, read the release diff and then run `npm install -g pinskills@<version>`.
 
+Starting with 0.1.1, releases are published from [GitHub Actions](.github/workflows/release.yml) via npm trusted publishing, so each of those versions carries a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) linking it to the exact commit and workflow run that built it. You can verify it with `npm audit signatures`.
+
 Or clone it to hack on it:
 
 ```sh
