@@ -20,7 +20,7 @@
   },
   "bugs": "https://github.com/matzkoh/pinskills/issues",
   "bin": {
-    "pinskills": "./pinskills.mjs"
+    "pinskills": "pinskills.mjs"
   },
   "files": [
     "pinskills.mjs",
