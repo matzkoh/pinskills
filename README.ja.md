@@ -4,6 +4,7 @@
 
 **エージェント用スキルをコミット SHA に固定する。隔離した二つの LLM 審査役とルール検査がそろって安全と判断するまで、中身は変わらない。**
 
+[![npm](https://img.shields.io/npm/v/pinskills?logo=npm)](https://www.npmjs.com/package/pinskills)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js ≥ 22](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Works with npx skills](https://img.shields.io/badge/works%20with-npx%20skills-000000)](https://github.com/vercel-labs/skills)
@@ -92,8 +93,12 @@ flowchart LR
 ## 📦 インストール
 
 ```sh
-npm install -g github:matzkoh/pinskills
+npm install -g pinskills
 ```
+
+`npx` で都度実行せず、グローバルに入れて使う。
+実行のたびに最新版を取ってくると、pinskills 自身が、防ごうとしている「黙って中身が変わる」状態になるためである。
+上げるときは、リリースの差分を読んでから `npm install -g pinskills@<version>` で入れる。
 
 手元で改造しながら使う場合は、clone して `npm link` する。
 

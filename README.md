@@ -4,6 +4,7 @@
 
 **Pin your agent skills to commit SHAs. Let nothing change until two isolated LLM reviewers and a rule engine agree it's safe.**
 
+[![npm](https://img.shields.io/npm/v/pinskills?logo=npm)](https://www.npmjs.com/package/pinskills)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js ≥ 22](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Works with npx skills](https://img.shields.io/badge/works%20with-npx%20skills-000000)](https://github.com/vercel-labs/skills)
@@ -91,8 +92,10 @@ flowchart LR
 ## 📦 Installation
 
 ```sh
-npm install -g github:matzkoh/pinskills
+npm install -g pinskills
 ```
+
+Install it globally rather than running it through `npx`. A guard that fetches its latest version on every run would be open to the same kind of silent change it exists to stop. To upgrade, read the release diff and then run `npm install -g pinskills@<version>`.
 
 Or clone it to hack on it:
 

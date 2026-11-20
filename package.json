@@ -1,10 +1,16 @@
 {
   "name": "pinskills",
-  "version": "0.0.0-development",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "description": "Pin agent skills installed with `npx skills` to commit SHAs, and gate every upstream change behind isolated LLM reviewers",
-  "keywords": ["agent-skills", "claude-code", "codex", "supply-chain-security", "prompt-injection", "skills"],
+  "keywords": [
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "supply-chain-security",
+    "prompt-injection",
+    "skills"
+  ],
   "license": "MIT",
   "author": "matzkoh",
   "homepage": "https://github.com/matzkoh/pinskills#readme",
@@ -16,7 +22,10 @@
   "bin": {
     "pinskills": "./pinskills.mjs"
   },
-  "files": ["pinskills.mjs"],
+  "files": [
+    "pinskills.mjs",
+    "README.ja.md"
+  ],
   "engines": {
     "node": ">=22"
   },
