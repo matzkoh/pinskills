@@ -39,6 +39,10 @@ const BATCH_CAP_BYTES = 250_000;
 // 分割しても現実的に審査しきれない総量。超えたら人間に回す
 const TOTAL_CAP_BYTES = 6_000_000;
 const REVIEW_TIMEOUT_MS = 10 * 60_000;
+// 審査役のモデルはバージョンを書かずに指定し、新しい版へ追随させる。
+// Codex には版なしの別名がないので、モデルは CLI の既定に任せ、推論の深さだけ決める
+const CLAUDE_MODEL = 'sonnet';
+const CODEX_REASONING_EFFORT = 'medium';
 const REVIEW_CONCURRENCY = 4;
 
 // ---------- process helpers ----------
@@ -508,7 +512,7 @@ function reviewWithClaude(meta, input, delim) {
       'claude',
       [
         '-p', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence',
-        '--model', 'sonnet', '--output-format', 'json', '--json-schema', JSON.stringify(REVIEW_SCHEMA),
+        '--model', CLAUDE_MODEL, '--output-format', 'json', '--json-schema', JSON.stringify(REVIEW_SCHEMA),
         reviewPrompt(meta, delim),
       ],
       { cwd: work, env: cleanEnv(HOME), input, timeoutMs: REVIEW_TIMEOUT_MS },
@@ -537,6 +541,7 @@ function reviewWithCodex(meta, input, delim) {
       [
         'exec', '--sandbox', 'read-only', '--ephemeral', '--skip-git-repo-check', '--ignore-rules',
         '--disable', 'apps', '--disable', 'plugins', '-c', 'web_search="disabled"',
+        '-c', `model_reasoning_effort="${CODEX_REASONING_EFFORT}"`,
         '--output-schema', schemaPath, '-o', outPath, reviewPrompt(meta, delim),
       ],
       { cwd: join(home, 'work'), env: { ...cleanEnv(home), CODEX_HOME: join(home, '.codex') }, input, timeoutMs: REVIEW_TIMEOUT_MS },
