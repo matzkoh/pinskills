@@ -35,6 +35,7 @@ Agent skills are prompts with superpowers. A `SKILL.md` that your coding agent l
 - [Commands](#-commands)
 - [Reading the results](#-reading-the-results)
 - [The review pipeline](#-the-review-pipeline)
+- [Adding new skills](#-adding-new-skills)
 - [Pinning the `skills` CLI itself](#-pinning-the-skills-cli-itself)
 - [Keep your agent from approving its own skills](#-keep-your-agent-from-approving-its-own-skills)
 - [Files and configuration](#-files-and-configuration)
@@ -147,6 +148,12 @@ Up to 4 skills are reviewed in parallel, with one live‑updating line per skill
 2. *Update N items that PASSed?*
 3. *Remove N skills that disappeared upstream?*
 
+**5. Add new skills with `pinskills add`.** It takes the same sources as `npx skills add`. Leave out `--skill` to pick from the skills it finds. pinskills reviews the entire contents and, if they PASS, asks whether to install them pinned to the SHA (default: **No**).
+
+```sh
+pinskills add owner/repo --skill my-skill
+```
+
 ## 🛠 Commands
 
 | Command | What it does |
@@ -154,12 +161,13 @@ Up to 4 skills are reviewed in parallel, with one live‑updating line per skill
 | `pinskills` | In a terminal: asks whether to run `check`. |
 | `pinskills check [skill...]` | Diffs each pinned skill (and `skills-cli`) against upstream `HEAD` and reviews the changes. |
 | `pinskills check --baseline [skill...]` | Reviews the **entire current contents** instead of the update. Doesn't record approvals. |
-| `pinskills approve <skill...>` | Moves the pin to the SHA reviewed by the last `check`. Allowed only for **PASS** results. |
+| `pinskills add <source> [--skill <name>...] [--full-depth]` | Reviews the **entire contents** of new skills and installs them pinned to a SHA. Sources and options mean the same as in `skills add`. |
+| `pinskills approve <skill...>` | Moves the pin to the SHA reviewed by the last `check` or `add`. Allowed only for **PASS** results. |
 | `pinskills approve <skill...> --force` | Moves the pin for a **NEEDS-REVIEW** result after you have read the diff yourself. |
 | `pinskills pin-current [skill...]` | Pins unpinned skills (and the `skills` CLI) to what's currently installed. Contents don't change. |
 | `pinskills remove <skill...>` | Removes skills with the pinned `skills` CLI and checks that they're gone from the lock. |
 
-**Exit codes:** `check` exits `0` only if everything is PASS or up to date. It exits `1` if anything still needs attention or an error occurs, and `2` for an unknown command.
+**Exit codes:** `check` and `add` exit `0` only if everything is PASS or up to date. It exits `1` if anything still needs attention or an error occurs, and `2` for an unknown command.
 
 > [!IMPORTANT]
 > The interactive prompts appear **only when a human is at the terminal**: stdin and stdout are both TTYs and the process isn't running under Claude Code (`CLAUDECODE` unset). Anywhere else, pinskills just prints the `approve` / `remove` / `pin-current` commands to run, and spinners fall back to plain, escape‑free lines.
@@ -213,6 +221,18 @@ Started with `codex exec --sandbox read-only --ephemeral`, with an **empty `HOME
 - Large diffs are split by file (huge files by line) into ~250 KB batches. **If any batch fails, the whole skill fails.** Diffs over 6 MB go straight to a human.
 - **Diff bodies are written to `reports/`, never to stdout.** If an agent runs pinskills, the untrusted text doesn't enter its context. Anything echoed from reviewers or upstream is stripped of ANSI escapes, control characters and invisible Unicode first.
 
+## ➕ Adding new skills
+
+`pinskills add` leaves it to `skills` to decide which skills to fetch and from where, and adds only the review and the pin:
+
+1. Runs `skills add <source> -g -y` with the pinned `skills` CLI against a throwaway `HOME`. Nothing is written to your real `~/.agents` or agent config directories.
+2. If you didn't pass `--skill` and the source has more than one skill, asks which ones to review before reviewing anything, since each review calls the LLMs. Where it can't prompt, it lists the skills it found and how to pick them with `--skill`, then exits without reviewing.
+3. Reads the name, source and folder hash of each skill from that throwaway lock, and finds the upstream commit SHA whose tree matches the hash.
+4. Reviews the diff from an empty tree to those contents with the same three layers as `check`, and records the result for `approve`.
+5. Installs what PASSed after you confirm in the terminal, the same way `approve` does (installs `source#SHA`, then checks the lock's `ref` and folder hash). For NEEDS-REVIEW results, read the diff and use `approve --force`.
+
+Skills that are already installed are skipped. Use `check` to review their updates.
+
 ## 📦 Pinning the `skills` CLI itself
 
 A pinned SHA doesn't help if the installer is compromised. `npx -y skills` fetches the latest release every time and resolves its dependencies (`tar`, `yaml`, …) by semver range, so a hijacked package could install something other than the SHA you reviewed.
@@ -246,7 +266,9 @@ So pinskills never calls `npx skills`. It runs its own pinned copy, which appear
 "Bash(*pinskills* pin-current*)"
 ```
 
-To approve from inside a Claude Code session, run the command yourself with the `!` prefix, e.g. `! pinskills approve my-skill`.
+`Bash(*skills add *)` also matches `pinskills add`, so the agent can't run `pinskills add` either.
+
+To add or approve skills from inside a Claude Code session, run the command yourself with the `!` prefix, e.g. `! pinskills approve my-skill`.
 
 > [!WARNING]
 > These rules only bind Claude Code. Other agents that share `~/.agents/skills` (Codex, GitHub Copilot, …) can still run `npx skills add` on their own.

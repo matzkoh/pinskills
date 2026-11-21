@@ -3,6 +3,7 @@
 // 隔離した LLM 審査役（claude / codex）とルール検査で確かめてから固定先を進める。
 //
 //   check [skill...] [--baseline]   上流 HEAD との差分を審査（--baseline は現在の中身全体を審査）
+//   add <source> [--skill name...]  新しいスキルを、中身全体を審査してから SHA 固定で入れる
 //   approve <skill...> [--force]    審査済みの SHA へ固定先を進める（PASS 以外は --force 必須）
 //   pin-current [skill...]          未固定のスキルを、いま入っている中身のコミットに固定する（中身は変えない）
 //   remove <skill...>               スキルを削除する（上流から消えたスキルの片付け用）
@@ -173,8 +174,9 @@ async function treeOf(gitDir, commit, dir) {
 }
 
 // lock のフォルダハッシュと一致する（= いま入っている中身の）コミットを探す
+// ref がブランチ名などのときは固定とみなさず、HEAD の履歴から探す
 async function findInstalledCommit(gitDir, headSha, entry) {
-  if (entry.ref) {
+  if (/^[0-9a-f]{40}$/.test(entry.ref ?? '')) {
     if (!(await ensureCommit(gitDir, entry.ref))) return null;
     return (await treeOf(gitDir, entry.ref, entry.dir)) === entry.skillFolderHash ? entry.ref : null;
   }
@@ -300,11 +302,11 @@ async function installCli(lockText) {
   if (!sameCliPackages(readFileSync(CLI_LOCK_PATH, 'utf8'), lockText)) throw new Error('入った lock が審査したものと違う');
 }
 
-function skillsCli(args) {
+function skillsCli(args, { env = process.env, cwd } = {}) {
   if (!existsSync(CLI_BIN)) throw new Error('skills CLI が未固定です。pinskills pin-current を実行してください');
   // skills は既定で、入れたスキルの取得元（非公開リポジトリ名や URL を含む）を skills.sh に送る。
   // 取得・配置には不要なので、公式の打ち切り用の環境変数で止める（skills.sh の監査問い合わせも止まる）
-  return run(CLI_BIN, args, { env: { ...process.env, DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' }, timeoutMs: 10 * 60_000 });
+  return run(CLI_BIN, args, { cwd, env: { ...env, DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' }, timeoutMs: 10 * 60_000 });
 }
 
 // skills CLI を「審査ジョブ」か「スキップ」に振り分ける。スキルの classify と同じ形を返す
@@ -615,6 +617,13 @@ const interactive = () => process.stdin.isTTY && process.stdout.isTTY;
 const canPrompt = () => interactive() && !process.env.CLAUDECODE;
 
 const short = (sha) => sha.slice(0, 7);
+
+// skills の失敗を1行にする。進捗表示に埋もれた原因（[SKILLS_…] のエラーコード付きの行）を優先し、なければ末尾
+function skillsError(label, r) {
+  const lines = `${r.stdout}\n${r.stderr}`.split('\n').filter((l) => l.trim());
+  const cause = lines.find((l) => /\[SKILLS_[A-Z_]+\]/.test(l)) ?? lines.slice(-3).join(' ');
+  return new Error(`${label}: ${sanitize(cause, 400).replace(/^[│■◇●└\s]+/, '')}`);
+}
 const bold = (s) => styleText('bold', s);
 const dim = (s) => styleText('dim', s);
 const red = (s) => styleText('red', s);
@@ -656,13 +665,67 @@ function selectTargets(names) {
   return { wantCli, ...skills };
 }
 
+// 審査は REVIEW_CONCURRENCY 件ずつ並列。進捗バーは完了件数、メッセージは実行中の内訳
+async function reviewJobs(jobs, reportDir) {
+  if (!jobs.length) return [];
+  const bar = p.progress({ max: jobs.length, style: 'heavy', size: 20 });
+  const status = new Map(jobs.map((j) => [j.entry.name, {}]));
+  const width = Math.max(...status.keys().map((n) => n.length));
+  const render = () => reviewBlock(status, width);
+  bar.start(render());
+  const results = await mapLimit(jobs, REVIEW_CONCURRENCY, async (job) => {
+    const s = status.get(job.entry.name);
+    s.progress = {};
+    bar.message(render());
+    const r = await reviewDiff(job, reportDir, (progress) => {
+      s.progress = progress;
+      bar.message(render());
+    });
+    s.overall = r.overall;
+    bar.advance(1, render());
+    return r;
+  });
+  const passCount = results.filter((r) => r.overall === 'PASS').length;
+  bar.stop(`審査完了: ${green(`PASS ${passCount}`)} / ${red(`NEEDS-REVIEW ${results.length - passCount}`)}`);
+  return results;
+}
+
+// approve の根拠として、審査した SHA とツリーを記録する
+function recordReviews(results, reportDir) {
+  const state = readState();
+  for (const r of results) {
+    state.reviews[r.entry.name] = {
+      source: r.entry.source,
+      toSha: r.toSha,
+      toTree: r.toTree,
+      overall: r.overall,
+      cliLock: r.cliLock,
+      reportDir,
+      at: new Date().toISOString(),
+    };
+  }
+  writeState(state);
+}
+
+function writeReport(reportDir, baseline, results, skipped) {
+  writeFileSync(
+    join(reportDir, 'report.json'),
+    JSON.stringify({ baseline, skipped, results: results.map(({ gitDir, entry, cliLock, pathspec, ...r }) => ({ name: entry.name, source: entry.source, ...r })) }, null, 2) + '\n',
+  );
+}
+
+function newReportDir(suffix) {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  const reportDir = join(REPORTS_DIR, stamp + suffix);
+  mkdirSync(reportDir, { recursive: true });
+  return reportDir;
+}
+
 async function cmdCheck(args, { introShown = false } = {}) {
   const { values, positionals: names } = parseCli(args, { baseline: { type: 'boolean' } });
   const baseline = !!values.baseline;
   const { wantCli, entries, uncovered } = selectTargets(names);
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
-  const reportDir = join(REPORTS_DIR, stamp + (baseline ? '-baseline' : ''));
-  mkdirSync(reportDir, { recursive: true });
+  const reportDir = newReportDir(baseline ? '-baseline' : '');
 
   if (!introShown) intro(baseline ? '全体審査' : '更新チェック');
 
@@ -694,50 +757,11 @@ async function cmdCheck(args, { introShown = false } = {}) {
       : `上流を取得: ${sources.size} リポジトリ、更新あり ${bold(String(jobs.length))} 件 / 最新 ${upToDateCount} 件`,
   );
 
-  // 審査は REVIEW_CONCURRENCY 件ずつ並列。進捗バーは完了件数、メッセージは実行中の内訳
-  let results = [];
-  if (jobs.length) {
-    const bar = p.progress({ max: jobs.length, style: 'heavy', size: 20 });
-    const status = new Map(jobs.map((j) => [j.entry.name, {}]));
-    const width = Math.max(...status.keys().map((n) => n.length));
-    const render = () => reviewBlock(status, width);
-    bar.start(render());
-    results = await mapLimit(jobs, REVIEW_CONCURRENCY, async (job) => {
-      const s = status.get(job.entry.name);
-      s.progress = {};
-      bar.message(render());
-      const r = await reviewDiff(job, reportDir, (progress) => {
-        s.progress = progress;
-        bar.message(render());
-      });
-      s.overall = r.overall;
-      bar.advance(1, render());
-      return r;
-    });
-    const passCount = results.filter((r) => r.overall === 'PASS').length;
-    bar.stop(`審査完了: ${green(`PASS ${passCount}`)} / ${red(`NEEDS-REVIEW ${results.length - passCount}`)}`);
-  }
+  const results = await reviewJobs(jobs, reportDir);
 
   // approve の根拠になるのは更新審査だけ。baseline（現状の確認）で上書きしない
-  if (!baseline) {
-    const state = readState();
-    for (const r of results) {
-      state.reviews[r.entry.name] = {
-        source: r.entry.source,
-        toSha: r.toSha,
-        toTree: r.toTree,
-        overall: r.overall,
-        cliLock: r.cliLock,
-        reportDir,
-        at: new Date().toISOString(),
-      };
-    }
-    writeState(state);
-  }
-  writeFileSync(
-    join(reportDir, 'report.json'),
-    JSON.stringify({ baseline, skipped, results: results.map(({ gitDir, entry, cliLock, pathspec, ...r }) => ({ name: entry.name, source: entry.source, ...r })) }, null, 2) + '\n',
-  );
+  if (!baseline) recordReviews(results, reportDir);
+  writeReport(reportDir, baseline, results, skipped);
 
   printResults(results, skipped);
   p.log.message(dim(`レポート: ${reportDir}`));
@@ -812,7 +836,7 @@ function printResults(results, skipped) {
 
 async function installPinned(source, sha, names) {
   const r = await skillsCli(['add', `${source}#${sha}`, '-g', '-y', '--skill', ...names, '--agent', ...TARGET_AGENTS]);
-  if (r.code !== 0) throw new Error(`skills add 失敗 (${source}#${short(sha)}): ${sanitize(r.stderr || r.stdout, 400)}`);
+  if (r.code !== 0) throw skillsError(`skills add 失敗 (${source}#${short(sha)})`, r);
 }
 
 function verifyPinned(name, sha, expectedTree) {
@@ -948,6 +972,102 @@ async function cmdRemove(args) {
   finish(await applyRemovals(names), '削除しました');
 }
 
+// ---------- add ----------
+
+// 名前は未審査の上流から来て、レポートのファイル名と skills の引数に使う。安全な文字種に限る
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// 固定済みの skills CLI に、使い捨ての HOME へスキルを入れさせ、その lock を返す。
+// どのスキルをどこから取るかの解釈は skills に任せ、pinskills は結果を審査して固定するだけにする。
+// 本物の配置先に書かせないよう、配置先を決める環境変数は外す（認証に要る git / gh の設定は本物を使う）
+async function stageAdd(source, { skill = [], fullDepth }) {
+  return withTmp('pinskills-add-', async (home) => {
+    const env = { ...process.env, HOME: home };
+    for (const k of ['XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR']) delete env[k];
+    const gitconfig = join(HOME, '.gitconfig');
+    if (!env.GIT_CONFIG_GLOBAL && existsSync(gitconfig)) env.GIT_CONFIG_GLOBAL = gitconfig;
+    env.GH_CONFIG_DIR ??= join(process.env.XDG_CONFIG_HOME ?? join(HOME, '.config'), 'gh');
+    const args = ['add', source, '-g', '-y', '--agent', ...TARGET_AGENTS];
+    if (skill.length) args.push('--skill', ...skill);
+    if (fullDepth) args.push('--full-depth');
+    const r = await skillsCli(args, { env, cwd: home });
+    const lockPath = join(home, '.agents', '.skill-lock.json');
+    if (r.code !== 0 || !existsSync(lockPath)) throw skillsError('skills add 失敗', r);
+    return Object.entries(JSON.parse(readFileSync(lockPath, 'utf8')).skills).map(([name, e]) => ({ name, ...e }));
+  });
+}
+
+// 使い捨ての lock の1エントリを振り分ける。入る中身全体の審査は classify の baseline と同じ
+function classifyNew(e, installed) {
+  const skip = (reason) => ({ skip: { name: sanitize(e.name, 60), reason } });
+  if (!SAFE_NAME.test(e.name) || e.name === CLI_NAME) return skip('使えない名前');
+  if (installed[e.name]) return skip('導入済み: 更新は check で審査してください');
+  if (e.sourceType !== 'github' || !e.skillFolderHash || !e.skillPath) return skip(`審査対象外 (sourceType=${e.sourceType ?? '-'})`);
+  return classify({ ...e, dir: skillDir(e.skillPath) }, true);
+}
+
+// 審査は1件ごとに LLM を呼ぶので、--skill の指定がなく複数見つかったときは審査する前に選ばせる。
+// 確認を出せない環境では一覧と指定の仕方を案内して、審査せずに終える。選ばなければ null
+async function chooseStaged(source, staged, installed) {
+  const label = (e) => sanitize(e.name, 60);
+  const hint = (e) => (installed[e.name] ? '導入済み' : sanitize(skillDir(e.skillPath), 80));
+  if (!canPrompt()) {
+    process.exitCode = 1;
+    p.log.info(`見つかったスキル:\n${staged.map((e) => `${label(e)}  ${dim(hint(e))}`).join('\n')}`);
+    p.log.info(`審査するスキルを指定してください:\n${bold(`pinskills add ${source} --skill <name...>`)}`);
+    p.outro(yellow('審査していません'));
+    return null;
+  }
+  const names = await p.multiselect({
+    message: '審査するスキルを選んでください（スペースで選択、Enter で決定）',
+    options: staged.map((e) => ({ value: e.name, label: label(e), hint: hint(e) })),
+    required: true,
+  });
+  if (p.isCancel(names)) {
+    p.cancel('中止しました');
+    return null;
+  }
+  return staged.filter((e) => names.includes(e.name));
+}
+
+// スキルを新しく入れる。skills に使い捨ての HOME へ入れさせて中身を特定し、全体を審査してから、
+// 本物の配置先へは approve と同じ流れで SHA を固定して入れる
+async function cmdAdd(args) {
+  const { values, positionals } = parseCli(args, { skill: { type: 'string', short: 's', multiple: true }, 'full-depth': { type: 'boolean' } });
+  if (positionals.length !== 1) throw new Error('入れるスキルの取得元を1つ指定してください（例: owner/repo）');
+  intro('追加');
+  const spin = p.spinner();
+  spin.start('skills で取得元を解決しています');
+  let staged;
+  try {
+    staged = await stageAdd(positionals[0], { skill: values.skill, fullDepth: values['full-depth'] });
+  } catch (err) {
+    spin.error(red(err.message));
+    process.exitCode = 1;
+    return p.outro(red('失敗しました'));
+  }
+  spin.stop(`${staged.length} 件のスキルを特定`);
+  const installed = readLock().skills;
+  const selected = values.skill || staged.length <= 1 ? staged : await chooseStaged(positionals[0], staged, installed);
+  if (!selected) return;
+  const outcomes = await Promise.all(selected.map((e) => classifyNew(e, installed)));
+  const jobs = outcomes.flatMap((o) => (o.job ? [o.job] : []));
+  const skipped = outcomes.flatMap((o) => (o.skip ? [o.skip] : []));
+
+  const reportDir = newReportDir('-add');
+  const results = await reviewJobs(jobs, reportDir);
+  recordReviews(results, reportDir);
+  writeReport(reportDir, false, results, skipped);
+  printResults(results, skipped);
+  p.log.message(dim(`レポート: ${reportDir}`));
+  const passed = results.filter((r) => r.overall === 'PASS');
+  const unresolved = passed.length < results.length || skipped.length > 0;
+  process.exitCode = unresolved ? 1 : 0;
+  await offerActions(unresolved, [
+    { names: passed.map((r) => r.entry.name), question: 'PASS の {n} 件を入れますか？', command: 'approve', apply: () => applyPins(passed.map(pinItem)) },
+  ]);
+}
+
 // ---------- main ----------
 
 // 未知のフラグ（--forse などの打ち間違い）はエラーにする
@@ -965,8 +1085,8 @@ process.stdout.on('error', (err) => {
   throw err;
 });
 
-const USAGE = 'usage: pinskills [check [skill...] [--baseline] | approve <skill...> [--force] | pin-current [skill...] | remove <skill...>]';
-const commands = { check: cmdCheck, approve: cmdApprove, 'pin-current': cmdPinCurrent, remove: cmdRemove };
+const USAGE = 'usage: pinskills [check [skill...] [--baseline] | add <source> [--skill <name>...] [--full-depth] | approve <skill...> [--force] | pin-current [skill...] | remove <skill...>]';
+const commands = { check: cmdCheck, add: cmdAdd, approve: cmdApprove, 'pin-current': cmdPinCurrent, remove: cmdRemove };
 
 // 引数なしで端末から起動したら、更新チェックを実行するか聞く（既定は Yes。Enter だけで進む）
 async function main([cmd, ...rest]) {

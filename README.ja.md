@@ -36,6 +36,7 @@
 - [コマンド](#-コマンド)
 - [結果の見方](#-結果の見方)
 - [審査の仕組み](#-審査の仕組み)
+- [新しいスキルの追加](#-新しいスキルの追加)
 - [skills CLI の固定](#-skills-cli-の固定)
 - [エージェントに承認させない設定](#-エージェントに承認させない設定)
 - [ファイルと設定](#-ファイルと設定)
@@ -159,6 +160,15 @@ pinskills check
 2. 「PASS の N 件を更新しますか？」
 3. 「上流から消えた N 件を削除しますか？」
 
+**5. 新しいスキルは `pinskills add` で入れる。**
+`npx skills add` と同じ取得元の書き方で指定する。
+`--skill` を省くと、見つかったスキルから審査するものを選べる。
+中身全体を審査し、PASS なら SHA 固定で入れるか聞かれる（既定は **No**）。
+
+```sh
+pinskills add owner/repo --skill my-skill
+```
+
 ## 🛠 コマンド
 
 | コマンド | 内容 |
@@ -166,13 +176,14 @@ pinskills check
 | `pinskills` | 端末から起動したとき、`check` を実行するか聞く。 |
 | `pinskills check [skill...]` | 固定中の各スキル（と `skills-cli`）を上流の `HEAD` と比べ、変更を審査する。 |
 | `pinskills check --baseline [skill...]` | 更新ではなく、**いまの中身の全体**を審査する。承認の根拠としては記録しない。 |
-| `pinskills approve <skill...>` | 直近の `check` で審査した SHA へ固定先を進める。**PASS** のものだけ進められる。 |
+| `pinskills add <source> [--skill <name>...] [--full-depth]` | 新しいスキルの**中身全体**を審査し、SHA 固定で入れる。取得元とオプションの意味は `skills add` と同じ。 |
+| `pinskills approve <skill...>` | 直近の `check` か `add` で審査した SHA へ固定先を進める。**PASS** のものだけ進められる。 |
 | `pinskills approve <skill...> --force` | **NEEDS-REVIEW** のものを、差分を自分で読んだうえで進める。 |
 | `pinskills pin-current [skill...]` | 未固定のスキル（と `skills` CLI）を、いま入っている中身に固定する。中身は変わらない。 |
 | `pinskills remove <skill...>` | 固定した `skills` CLI でスキルを削除し、lock から消えたことを確かめる。 |
 
 **終了コード：**
-`check` は、すべてが PASS か最新のときだけ `0` を返す。
+`check` と `add` は、すべてが PASS か最新のときだけ `0` を返す。
 要確認のものが残るかエラーが起きれば `1`、未知のコマンドなら `2` を返す。
 
 > [!IMPORTANT]
@@ -233,6 +244,18 @@ pinskills check
 - 大きな差分はファイル単位（巨大なファイルは行単位）で約 250KB ずつに分けて審査する。**一つでも失敗すれば、そのスキル全体を PASS にしない。** 6MB を超える差分は人間に回す。
 - **差分の本文は `reports/` に書き出すだけで、標準出力には出さない。** pinskills を実行するのがエージェントであっても、信頼できない文章がその文脈に入らないようにするためである。審査役や上流に由来する文字列を表示するときは、ANSI エスケープ、制御文字、不可視文字を取り除いてから出す。
 
+## ➕ 新しいスキルの追加
+
+`pinskills add` は、どのスキルをどこから取るかの解釈を `skills` に任せ、審査と固定だけを足す。
+
+1. 固定した `skills` CLI で、使い捨ての `HOME` に `skills add <source> -g -y` を実行する。本物の `~/.agents` やエージェントの設定ディレクトリには書かない。
+2. `--skill` の指定がなく複数見つかったときは、審査する前にどれを審査するか選ぶ（審査は1件ごとに LLM を呼ぶため）。確認を出せない環境では、見つかったスキルの一覧と `--skill` での指定の仕方を案内し、審査せずに終える。
+3. 使い捨ての lock から、入るスキルの名前・取得元・フォルダハッシュを得て、そのハッシュに一致するコミット SHA を上流の履歴から特定する。
+4. 空のツリーからその中身への差分を、`check` と同じ三段で審査する。結果は承認の根拠として記録する。
+5. PASS のものは、端末で確認したうえで `approve` と同じ流れで入れる（`source#SHA` で入れ、lock の `ref` とフォルダハッシュを確かめる）。NEEDS-REVIEW のものは、差分を読んでから `approve --force` で入れる。
+
+すでに入っているスキルは対象にしない。更新は `check` で審査する。
+
 ## 📦 skills CLI の固定
 
 インストーラーが乗っ取られれば、SHA を固定しても意味がない。
@@ -270,7 +293,9 @@ Claude Code では、`~/.claude/settings.json` の `permissions.deny` に次を�
 "Bash(*pinskills* pin-current*)"
 ```
 
-Claude Code のセッションの中から承認するときは、`! pinskills approve my-skill` のように `!` を付けて自分で実行する。
+`Bash(*skills add *)` は `pinskills add` にも一致するので、エージェントは `pinskills add` も実行できない。
+
+Claude Code のセッションの中から追加や承認をするときは、`! pinskills approve my-skill` のように `!` を付けて自分で実行する。
 
 > [!WARNING]
 > この設定が効くのは Claude Code だけである。
