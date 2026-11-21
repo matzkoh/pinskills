@@ -1,6 +1,6 @@
 {
   "name": "pinskills",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "Pin agent skills installed with `npx skills` to commit SHAs, and gate every upstream change behind isolated LLM reviewers",
   "keywords": [
